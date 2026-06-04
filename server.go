@@ -93,6 +93,7 @@ func (a *App) Handler() http.Handler {
 	protected.HandleFunc("/api/config", a.requireMethod(http.MethodGet, a.handleConfig))
 	protected.HandleFunc("/api/upload", a.requireMethod(http.MethodPost, a.handleUpload))
 	protected.HandleFunc("/api/text", a.requireMethod(http.MethodPost, a.handleText))
+	protected.HandleFunc("/api/bundle", a.requireMethod(http.MethodPost, a.handleBundle))
 	protected.HandleFunc("/api/items/", a.handleItems)
 	public.Handle("/", a.requireAuth(protected))
 
@@ -335,6 +336,12 @@ func (a *App) handleItems(w http.ResponseWriter, r *http.Request) {
 		a.handleItemContent(w, r, id)
 	case len(parts) == 2 && parts[1] == "preview" && r.Method == http.MethodGet:
 		a.handleItemPreview(w, r, id)
+	case len(parts) == 2 && parts[1] == "archive.zip" && (r.Method == http.MethodGet || r.Method == http.MethodHead):
+		a.handleBundleArchive(w, r, id)
+	case len(parts) == 4 && parts[1] == "entries" && parts[3] == "content" && (r.Method == http.MethodGet || r.Method == http.MethodHead):
+		a.handleBundleEntryContent(w, r, id, parts[2])
+	case len(parts) == 4 && parts[1] == "entries" && parts[3] == "preview" && r.Method == http.MethodGet:
+		a.handleBundleEntryPreview(w, r, id, parts[2])
 	case len(parts) == 2 && parts[1] == "unlock" && r.Method == http.MethodPost:
 		a.handleItemUnlock(w, r, id)
 	case len(parts) == 2 && parts[1] == "qr.png" && r.Method == http.MethodGet:

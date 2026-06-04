@@ -55,24 +55,24 @@ async function loadConfig() {
 }
 
 function showTab(tab) {
-  const fileActive = tab === "file";
-  $("#fileTab").classList.toggle("active", fileActive);
-  $("#textTab").classList.toggle("active", !fileActive);
-  $("#fileTab").setAttribute("aria-selected", String(fileActive));
-  $("#textTab").setAttribute("aria-selected", String(!fileActive));
-  $("#filePanel").hidden = !fileActive;
-  $("#textPanel").hidden = fileActive;
-  $("#filePanel").classList.toggle("active", fileActive);
-  $("#textPanel").classList.toggle("active", !fileActive);
+  for (const name of ["file", "text", "bundle"]) {
+    const active = tab === name;
+    const tabButton = $(`#${name}Tab`);
+    const panel = $(`#${name}Panel`);
+    tabButton.classList.toggle("active", active);
+    tabButton.setAttribute("aria-selected", String(active));
+    panel.hidden = !active;
+    panel.classList.toggle("active", active);
+  }
 }
 
-function wireDropZone() {
-  const input = $("#fileInput");
-  const drop = $("#dropZone");
-  const name = $("#fileName");
+function wireDropZone(inputSelector, dropSelector, labelSelector, emptyLabel) {
+  const input = $(inputSelector);
+  const drop = $(dropSelector);
+  const name = $(labelSelector);
 
   input.addEventListener("change", () => {
-    name.textContent = input.files[0] ? input.files[0].name : "Select or drop a file";
+    name.textContent = filesLabel(input.files, emptyLabel);
   });
 
   for (const eventName of ["dragenter", "dragover"]) {
@@ -91,18 +91,28 @@ function wireDropZone() {
     const files = event.dataTransfer.files;
     if (files.length > 0) {
       input.files = files;
-      name.textContent = files[0].name;
+      name.textContent = filesLabel(files, emptyLabel);
     }
   });
+}
+
+function filesLabel(files, emptyLabel) {
+  if (!files || files.length === 0) return emptyLabel;
+  if (files.length === 1) return files[0].name;
+  return `${files.length} files selected`;
 }
 
 function showResult(payload) {
   const template = $("#resultTemplate");
   const node = template.content.firstElementChild.cloneNode(true);
-  node.querySelector(".result-name").textContent = `${payload.item.filename} · ${payload.item.sizeLabel}`;
+  const detail = payload.item.kind === "bundle"
+    ? `${payload.item.entryCount} items · ${payload.item.sizeLabel}`
+    : payload.item.sizeLabel;
+  node.querySelector(".result-name").textContent = `${payload.item.filename} · ${detail}`;
   node.querySelector(".share-url").value = payload.shareUrl;
   node.querySelector(".open-link").href = payload.shareUrl;
   node.querySelector(".download-link").href = payload.item.downloadUrl;
+  node.querySelector(".download-link").textContent = payload.item.kind === "bundle" ? "Download ZIP" : "Download";
   node.querySelector(".qr-img").src = payload.item.qrUrl;
   node.querySelector(".copy-link").addEventListener("click", () => copyText(payload.shareUrl));
   node.querySelector(".delete-button").addEventListener("click", async () => {
@@ -180,6 +190,41 @@ async function uploadText(event) {
   }
 }
 
+async function uploadBundle(event) {
+  event.preventDefault();
+  const files = $("#bundleFiles").files;
+  const text = $("#bundleTextInput").value;
+  if ((!files || files.length === 0) && !text.trim()) {
+    alert("Add files or text first");
+    return;
+  }
+  const submit = $("#bundleSubmit");
+  setBusy(submit, true, "Sharing");
+
+  const data = new FormData();
+  data.append("name", $("#bundleName").value);
+  data.append("ttl", $("#bundleTTL").value);
+  const password = $("#bundlePassword").value.trim();
+  if (password) data.append("password", password);
+  if (text.trim()) {
+    data.append("textName", $("#bundleTextName").value);
+    data.append("text", text);
+  }
+  for (const file of files) {
+    data.append("files", file);
+  }
+
+  try {
+    const res = await fetch(apiPath("/api/bundle"), { method: "POST", body: data });
+    if (!res.ok) throw new Error(await safeError(res));
+    showResult(await res.json());
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    setBusy(submit, false);
+  }
+}
+
 async function renderShare(id) {
   $("#homeView").hidden = true;
   $("#shareView").hidden = false;
@@ -210,12 +255,10 @@ async function renderShare(id) {
   `;
   card.querySelector("h1").textContent = item.filename;
   const meta = card.querySelector(".share-meta");
-  for (const label of [
-    item.sizeLabel,
-    item.previewable ? item.previewFormat : "download",
-    expiresLabel(item.secondsRemaining),
-    item.passwordProtected ? "locked" : "",
-  ]) {
+  const metaLabels = item.kind === "bundle"
+    ? [`${item.entryCount} items`, item.sizeLabel, "bundle", expiresLabel(item.secondsRemaining), item.passwordProtected ? "locked" : ""]
+    : [item.sizeLabel, item.previewable ? item.previewFormat : "download", expiresLabel(item.secondsRemaining), item.passwordProtected ? "locked" : ""];
+  for (const label of metaLabels) {
     if (!label) continue;
     const pill = document.createElement("span");
     pill.className = "pill";
@@ -227,6 +270,7 @@ async function renderShare(id) {
   card.querySelector(".actions").hidden = locked;
   if (!locked) {
     card.querySelector(".download-action").href = item.downloadUrl;
+    card.querySelector(".download-action").textContent = item.kind === "bundle" ? "Download ZIP" : "Download";
   }
   card.querySelector(".copy-action").addEventListener("click", () => copyText(location.href));
   card.querySelector(".qr-img").src = item.qrUrl;
@@ -234,6 +278,10 @@ async function renderShare(id) {
   $("#shareContent").replaceChildren(card);
   if (locked) {
     renderUnlock(card, item);
+    return;
+  }
+  if (item.kind === "bundle") {
+    await renderBundle(card, item);
     return;
   }
   if (item.previewable) {
@@ -276,6 +324,78 @@ function renderUnlock(card, item) {
     }
   });
   card.append(unlock);
+}
+
+async function renderBundle(card, item) {
+  const bundle = document.createElement("section");
+  bundle.className = "bundle";
+  bundle.innerHTML = `<div class="bundle-list"></div>`;
+  const list = bundle.querySelector(".bundle-list");
+  card.append(bundle);
+
+  for (const entry of item.entries || []) {
+    const row = document.createElement("article");
+    row.className = entry.image ? "bundle-entry image-entry" : "bundle-entry";
+    row.innerHTML = `
+      <div class="entry-main">
+        <h2></h2>
+        <div class="share-meta">
+          <span class="pill"></span>
+          <span class="pill"></span>
+        </div>
+      </div>
+      <div class="entry-actions">
+        <a class="button secondary entry-download">Download</a>
+      </div>
+    `;
+    row.querySelector("h2").textContent = entry.filename;
+    const pills = row.querySelectorAll(".pill");
+    pills[0].textContent = entry.sizeLabel;
+    pills[1].textContent = entry.image ? "image" : (entry.previewFormat || "file");
+    row.querySelector(".entry-download").href = entry.downloadUrl;
+    list.append(row);
+
+    if (entry.image) {
+      const image = document.createElement("img");
+      image.className = "bundle-image";
+      image.alt = entry.filename;
+      image.src = entry.contentUrl;
+      row.prepend(image);
+    } else if (entry.previewUrl) {
+      await renderEntryPreview(row, entry);
+    }
+  }
+}
+
+async function renderEntryPreview(row, entry) {
+  const preview = document.createElement("div");
+  preview.className = "entry-preview";
+  preview.innerHTML = `
+    <div class="preview-toolbar">
+      <h3>Preview</h3>
+      <button class="secondary copy-entry-text" type="button">Copy Text</button>
+    </div>
+    <div class="preview-body"></div>
+  `;
+  row.append(preview);
+
+  const res = await fetch(entry.previewUrl);
+  if (!res.ok) {
+    preview.querySelector(".preview-body").textContent = await safeError(res);
+    return;
+  }
+  const data = await res.json();
+  preview.querySelector(".copy-entry-text").addEventListener("click", () => copyText(data.text));
+  if (data.format === "markdown") {
+    const rendered = document.createElement("div");
+    rendered.className = "markdown-preview";
+    rendered.innerHTML = data.html || "";
+    preview.querySelector(".preview-body").replaceChildren(rendered);
+  } else {
+    const pre = document.createElement("pre");
+    pre.textContent = data.text;
+    preview.querySelector(".preview-body").replaceChildren(pre);
+  }
 }
 
 async function renderPreview(card, item) {
@@ -339,11 +459,15 @@ async function init() {
   await loadConfig();
   fillTTL($("#fileTTL"), state.config.defaultTTLValue);
   fillTTL($("#textTTL"), state.config.defaultTTLValue);
-  wireDropZone();
+  fillTTL($("#bundleTTL"), state.config.defaultTTLValue);
+  wireDropZone("#fileInput", "#dropZone", "#fileName", "Select or drop a file");
+  wireDropZone("#bundleFiles", "#bundleDropZone", "#bundleFileName", "Select or drop files");
   $("#fileTab").addEventListener("click", () => showTab("file"));
   $("#textTab").addEventListener("click", () => showTab("text"));
+  $("#bundleTab").addEventListener("click", () => showTab("bundle"));
   $("#fileForm").addEventListener("submit", uploadFile);
   $("#textForm").addEventListener("submit", uploadText);
+  $("#bundleForm").addEventListener("submit", uploadBundle);
 
   const escapedBasePath = basePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const sharePattern = new RegExp(`^${escapedBasePath}/s/([A-Za-z0-9_-]+)$`);

@@ -1,6 +1,6 @@
 # quick-file-share
 
-Small intranet file/text share server with expiring links, browser upload UI, txt/md preview, copy buttons, QR codes, and optional per-share passwords.
+Small intranet file/text/bundle share server with expiring links, browser upload UI, image and txt/md preview, copy buttons, QR codes, and optional per-share passwords.
 
 ## Run
 
@@ -50,11 +50,12 @@ QFS_ACCESS_PASSWORD='change-me' ./bin/quick-file-share
 
 ## Behavior
 
-- Files and text are stored under `data/items`.
+- Files, text, and bundles are stored under `data/items`.
 - The default expiry is 24 hours.
 - Expired items are deleted by a background cleanup loop and also lazily deleted when accessed.
 - Upload responses include a delete URL. Anyone with that delete token can delete the item before expiry.
-- Uploaders can set an optional password per file or text share. Protected content and previews require that password.
+- Uploaders can set an optional password per file, text share, or bundle. Protected content and previews require that password.
+- Bundles can include multiple files plus one text note. Bundle share pages show image previews, txt/md previews, individual downloads, and a ZIP download.
 - When `QFS_ACCESS_PASSWORD` is set, the whole site also requires a separate access password.
 
 ## Security checklist
@@ -81,6 +82,20 @@ Share text:
 curl -H 'Content-Type: application/json' \
   -d '{"name":"note.md","text":"# hello","ttl":"1h","password":"optional-secret"}' \
   http://localhost:8080/api/text
+```
+
+Share a bundle:
+
+```sh
+curl \
+  -F name=handoff \
+  -F ttl=24h \
+  -F password=optional-secret \
+  -F textName=note.md \
+  -F 'text=# hello' \
+  -F files=@./photo1.png \
+  -F files=@./photo2.jpg \
+  http://localhost:8080/api/bundle
 ```
 
 TTL values support Go durations such as `10m`, `1h`, `24h`, plus day values such as `3d` and `7d`.

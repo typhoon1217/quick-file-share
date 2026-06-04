@@ -1,11 +1,14 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"os"
 	"strings"
 	"testing"
@@ -212,6 +215,130 @@ func TestItemPasswordProtectsPreviewAndContent(t *testing.T) {
 	}
 }
 
+func TestBundleCreatePreviewArchiveAndPassword(t *testing.T) {
+	app := testApp(t)
+	app.cfg.MaxUploadBytes = 4096
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	_ = writer.WriteField("name", "handoff")
+	_ = writer.WriteField("ttl", "1h")
+	_ = writer.WriteField("password", "bundle secret")
+	_ = writer.WriteField("textName", "note.md")
+	_ = writer.WriteField("text", "# Bundle\n\ncopy me")
+	writeMultipartFile(t, writer, "files", "photo.png", "image/png", []byte("\x89PNG\r\n\x1a\nimage"))
+	writeMultipartFile(t, writer, "files", "readme.txt", "text/plain; charset=utf-8", []byte("plain file"))
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := http.Post(server.URL+"/api/bundle", writer.FormDataContentType(), &buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create status %d", res.StatusCode)
+	}
+
+	var created struct {
+		Item PublicItem `json:"item"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Item.Kind != KindBundle {
+		t.Fatalf("kind = %q", created.Item.Kind)
+	}
+	if created.Item.EntryCount != 3 || len(created.Item.Entries) != 3 {
+		t.Fatalf("entries = count:%d len:%d", created.Item.EntryCount, len(created.Item.Entries))
+	}
+	if !created.Item.PasswordProtected || !created.Item.Unlocked {
+		t.Fatalf("created lock state = protected:%v unlocked:%v", created.Item.PasswordProtected, created.Item.Unlocked)
+	}
+	if !strings.HasSuffix(created.Item.DownloadURL, "/archive.zip") {
+		t.Fatalf("download url = %q", created.Item.DownloadURL)
+	}
+
+	lockedArchive, err := http.Get(server.URL + "/api/items/" + created.Item.ID + "/archive.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lockedArchive.Body.Close()
+	if lockedArchive.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("locked archive status %d", lockedArchive.StatusCode)
+	}
+
+	unlock, err := postJSON(server.URL+"/api/items/"+created.Item.ID+"/unlock", `{"password":"bundle secret"}`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock.Body.Close()
+	if unlock.StatusCode != http.StatusOK {
+		t.Fatalf("unlock status %d", unlock.StatusCode)
+	}
+
+	var noteEntry PublicBundleEntry
+	for _, entry := range created.Item.Entries {
+		if entry.Filename == "note.md" {
+			noteEntry = entry
+		}
+	}
+	if noteEntry.ID == "" || noteEntry.PreviewURL == "" {
+		t.Fatalf("note entry missing preview: %+v", noteEntry)
+	}
+	previewReq, err := http.NewRequest(http.MethodGet, server.URL+noteEntry.PreviewURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cookie := range unlock.Cookies() {
+		previewReq.AddCookie(cookie)
+	}
+	preview, err := http.DefaultClient.Do(previewReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer preview.Body.Close()
+	if preview.StatusCode != http.StatusOK {
+		t.Fatalf("preview status %d", preview.StatusCode)
+	}
+
+	archiveReq, err := http.NewRequest(http.MethodGet, server.URL+"/api/items/"+created.Item.ID+"/archive.zip", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cookie := range unlock.Cookies() {
+		archiveReq.AddCookie(cookie)
+	}
+	archiveRes, err := http.DefaultClient.Do(archiveReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archiveRes.Body.Close()
+	if archiveRes.StatusCode != http.StatusOK {
+		t.Fatalf("archive status %d", archiveRes.StatusCode)
+	}
+	archiveBytes, err := io.ReadAll(archiveRes.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := zip.NewReader(bytes.NewReader(archiveBytes), int64(len(archiveBytes)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, file := range reader.File {
+		names[file.Name] = true
+	}
+	for _, name := range []string{"note.md", "photo.png", "readme.txt"} {
+		if !names[name] {
+			t.Fatalf("archive missing %q, got %#v", name, names)
+		}
+	}
+}
+
 func TestAccessPasswordProtectsAPI(t *testing.T) {
 	app := testApp(t)
 	app.cfg.AccessPassword = "secret"
@@ -342,6 +469,20 @@ func TestBasePathRedirectsDuplicatedLeadingSlashes(t *testing.T) {
 	}
 	if got := rec.Header().Get("Location"); got != "/qfs/api/config" {
 		t.Fatalf("nested location = %q", got)
+	}
+}
+
+func writeMultipartFile(t *testing.T, writer *multipart.Writer, fieldName, filename, contentType string, content []byte) {
+	t.Helper()
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", `form-data; name="`+fieldName+`"; filename="`+filename+`"`)
+	header.Set("Content-Type", contentType)
+	part, err := writer.CreatePart(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(content); err != nil {
+		t.Fatal(err)
 	}
 }
 

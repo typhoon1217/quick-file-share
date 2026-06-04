@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Quick File Share</title>
   <meta name="qfs-base-path" content="{{.BasePath}}">
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="{{.BasePath}}/assets/styles.css">
 </head>
 <body>
@@ -18,6 +19,7 @@
       <div class="tabs" role="tablist" aria-label="Upload type">
         <button class="tab active" id="fileTab" type="button" role="tab" aria-selected="true">File</button>
         <button class="tab" id="textTab" type="button" role="tab" aria-selected="false">Text</button>
+        <button class="tab" id="bundleTab" type="button" role="tab" aria-selected="false">Bundle</button>
       </div>
 
       <section id="filePanel" class="panel active" aria-labelledby="fileTab">
@@ -54,6 +56,33 @@
             <input id="textPassword" name="password" type="password" autocomplete="new-password" placeholder="Optional">
           </div>
           <button id="textSubmit" type="submit">Share Text</button>
+        </form>
+      </section>
+
+      <section id="bundlePanel" class="panel" aria-labelledby="bundleTab" hidden>
+        <form id="bundleForm" class="upload-form">
+          <div class="form-row">
+            <label for="bundleName">Name</label>
+            <input id="bundleName" name="name" type="text" value="bundle" autocomplete="off">
+          </div>
+          <label id="bundleDropZone" class="drop-zone" for="bundleFiles">
+            <input id="bundleFiles" name="files" type="file" multiple>
+            <span id="bundleFileName">Select or drop files</span>
+          </label>
+          <div class="form-row">
+            <label for="bundleTextName">Text name</label>
+            <input id="bundleTextName" name="textName" type="text" value="note.txt" autocomplete="off">
+          </div>
+          <textarea id="bundleTextInput" name="text" rows="8" spellcheck="false" placeholder="Optional text"></textarea>
+          <div class="form-row">
+            <label for="bundleTTL">Expires</label>
+            <select id="bundleTTL" name="ttl"></select>
+          </div>
+          <div class="form-row">
+            <label for="bundlePassword">Password</label>
+            <input id="bundlePassword" name="password" type="password" autocomplete="new-password" placeholder="Optional">
+          </div>
+          <button id="bundleSubmit" type="submit">Share Bundle</button>
         </form>
       </section>
 

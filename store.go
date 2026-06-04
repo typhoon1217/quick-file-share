@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -23,6 +24,12 @@ var (
 type Store struct {
 	dataDir string
 	now     func() time.Time
+}
+
+type BundleSource struct {
+	Filename    string
+	ContentType string
+	Src         io.Reader
 }
 
 func NewStore(dataDir string, now func() time.Time) *Store {
@@ -79,6 +86,89 @@ func (s *Store) Create(kind, filename, contentType string, expiresAt time.Time, 
 			return Item{}, err
 		}
 		item.Size = size
+
+		if err := s.saveMeta(item); err != nil {
+			_ = os.RemoveAll(dir)
+			return Item{}, err
+		}
+		return item, nil
+	}
+
+	return Item{}, errors.New("could not allocate item id")
+}
+
+func (s *Store) CreateBundle(filename string, expiresAt time.Time, passwordHash string, sources []BundleSource) (Item, error) {
+	if len(sources) == 0 {
+		return Item{}, errors.New("bundle requires at least one entry")
+	}
+
+	for attempts := 0; attempts < 5; attempts++ {
+		id, err := randomToken(12)
+		if err != nil {
+			return Item{}, err
+		}
+		deleteToken, err := randomToken(24)
+		if err != nil {
+			return Item{}, err
+		}
+
+		dir := s.itemDir(id)
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			if os.IsExist(err) {
+				continue
+			}
+			return Item{}, err
+		}
+		if err := os.Mkdir(s.entriesDir(id), 0o700); err != nil {
+			_ = os.RemoveAll(dir)
+			return Item{}, err
+		}
+
+		item := Item{
+			ID:           id,
+			Kind:         KindBundle,
+			Filename:     cleanFilename(filename),
+			ContentType:  "application/zip",
+			CreatedAt:    s.now().UTC(),
+			ExpiresAt:    expiresAt.UTC(),
+			DeleteToken:  deleteToken,
+			PasswordHash: strings.TrimSpace(passwordHash),
+		}
+		if item.Filename == "" {
+			item.Filename = "bundle"
+		}
+
+		usedNames := map[string]int{}
+		var total int64
+		for index, source := range sources {
+			entryID, err := randomToken(8)
+			if err != nil {
+				_ = os.RemoveAll(dir)
+				return Item{}, err
+			}
+			name := uniqueBundleFilename(source.Filename, index, usedNames)
+			contentType := strings.TrimSpace(source.ContentType)
+			if contentType == "" {
+				contentType = mimeTypeByFilename(name)
+			}
+			if contentType == "" {
+				contentType = "application/octet-stream"
+			}
+
+			size, err := writeFileAtomic(s.entryContentPath(id, entryID), source.Src)
+			if err != nil {
+				_ = os.RemoveAll(dir)
+				return Item{}, err
+			}
+			total += size
+			item.Entries = append(item.Entries, BundleEntry{
+				ID:          entryID,
+				Filename:    name,
+				ContentType: contentType,
+				Size:        size,
+			})
+		}
+		item.Size = total
 
 		if err := s.saveMeta(item); err != nil {
 			_ = os.RemoveAll(dir)
@@ -157,6 +247,10 @@ func (s *Store) ContentPath(id string) string {
 	return s.contentPath(id)
 }
 
+func (s *Store) EntryContentPath(id, entryID string) string {
+	return s.entryContentPath(id, entryID)
+}
+
 func (s *Store) saveMeta(item Item) error {
 	data, err := json.MarshalIndent(item, "", "  ")
 	if err != nil {
@@ -200,6 +294,14 @@ func (s *Store) contentPath(id string) string {
 	return filepath.Join(s.itemDir(id), "content")
 }
 
+func (s *Store) entriesDir(id string) string {
+	return filepath.Join(s.itemDir(id), "entries")
+}
+
+func (s *Store) entryContentPath(id, entryID string) string {
+	return filepath.Join(s.entriesDir(id), entryID)
+}
+
 func (s *Store) metaPath(id string) string {
 	return filepath.Join(s.itemDir(id), "meta.json")
 }
@@ -224,6 +326,32 @@ func cleanFilename(name string) string {
 		return ""
 	}
 	return name
+}
+
+func uniqueBundleFilename(name string, index int, used map[string]int) string {
+	name = cleanFilename(name)
+	if name == "" {
+		name = fmt.Sprintf("file-%d", index+1)
+	}
+	count := used[strings.ToLower(name)]
+	used[strings.ToLower(name)] = count + 1
+	if count == 0 {
+		return name
+	}
+	ext := filepath.Ext(name)
+	base := strings.TrimSuffix(name, ext)
+	return fmt.Sprintf("%s (%d)%s", base, count+1, ext)
+}
+
+func mimeTypeByFilename(name string) string {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".md", ".markdown":
+		return "text/markdown; charset=utf-8"
+	case ".txt":
+		return "text/plain; charset=utf-8"
+	default:
+		return mime.TypeByExtension(filepath.Ext(name))
+	}
 }
 
 func writeFileAtomic(path string, src io.Reader) (int64, error) {

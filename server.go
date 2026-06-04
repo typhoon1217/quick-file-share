@@ -109,6 +109,7 @@ func (a *App) Handler() http.Handler {
 		prefixed.Handle(a.cfg.BasePath+"/", http.StripPrefix(a.cfg.BasePath, handler))
 		handler = prefixed
 	}
+	handler = a.normalizeBasePath(handler)
 
 	return a.logRequests(a.securityHeaders(handler))
 }
@@ -583,6 +584,30 @@ func (a *App) absoluteURL(r *http.Request, path string) string {
 
 func (a *App) publicPath(path string) string {
 	return joinBasePath(a.cfg.BasePath, path)
+}
+
+func (a *App) normalizeBasePath(next http.Handler) http.Handler {
+	if a.cfg.BasePath == "" {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cleanPath := r.URL.EscapedPath()
+		for strings.HasPrefix(cleanPath, "//") {
+			cleanPath = cleanPath[1:]
+		}
+		if cleanPath != r.URL.EscapedPath() && (cleanPath == a.cfg.BasePath || strings.HasPrefix(cleanPath, a.cfg.BasePath+"/")) {
+			target := cleanPath
+			if target == a.cfg.BasePath {
+				target = a.publicPath("/")
+			}
+			if r.URL.RawQuery != "" {
+				target += "?" + r.URL.RawQuery
+			}
+			http.Redirect(w, r, target, http.StatusMovedPermanently)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (a *App) cookiePath() string {

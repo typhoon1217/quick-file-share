@@ -318,6 +318,33 @@ func TestBasePathRoutesAndGeneratedURLs(t *testing.T) {
 	}
 }
 
+func TestBasePathRedirectsDuplicatedLeadingSlashes(t *testing.T) {
+	app := testApp(t)
+	app.cfg.BasePath = "/qfs"
+	req := httptest.NewRequest(http.MethodGet, "http://example.com//qfs?x=1", nil)
+	rec := httptest.NewRecorder()
+
+	app.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMovedPermanently {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if got := rec.Header().Get("Location"); got != "/qfs/?x=1" {
+		t.Fatalf("location = %q", got)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "http://example.com///qfs/api/config", nil)
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMovedPermanently {
+		t.Fatalf("nested status = %d", rec.Code)
+	}
+	if got := rec.Header().Get("Location"); got != "/qfs/api/config" {
+		t.Fatalf("nested location = %q", got)
+	}
+}
+
 func postJSON(url, body string, cookies []*http.Cookie) (*http.Response, error) {
 	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
 	if err != nil {

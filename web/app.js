@@ -13,6 +13,11 @@ const state = {
 };
 
 const $ = (selector) => document.querySelector(selector);
+const basePath = document.querySelector('meta[name="qfs-base-path"]')?.content || "";
+
+function apiPath(path) {
+  return `${basePath}${path}`;
+}
 
 function setBusy(button, busy, text) {
   button.disabled = busy;
@@ -43,7 +48,7 @@ function fillTTL(select, selectedValue) {
 }
 
 async function loadConfig() {
-  const res = await fetch("/api/config");
+  const res = await fetch(apiPath("/api/config"));
   if (!res.ok) throw new Error("Could not load server config");
   state.config = await res.json();
   $("#serverMeta").textContent = `Max ${state.config.maxUploadLabel} · default ${state.config.defaultTTL}`;
@@ -102,7 +107,7 @@ function showResult(payload) {
   node.querySelector(".copy-link").addEventListener("click", () => copyText(payload.shareUrl));
   node.querySelector(".delete-button").addEventListener("click", async () => {
     if (!confirm("Delete this item now?")) return;
-    const res = await fetch(`/api/items/${payload.item.id}?token=${encodeURIComponent(payload.deleteToken)}`, {
+    const res = await fetch(apiPath(`/api/items/${payload.item.id}?token=${encodeURIComponent(payload.deleteToken)}`), {
       method: "DELETE",
     });
     if (!res.ok) {
@@ -133,7 +138,7 @@ async function uploadFile(event) {
   data.append("ttl", $("#fileTTL").value);
 
   try {
-    const res = await fetch("/api/upload", { method: "POST", body: data });
+    const res = await fetch(apiPath("/api/upload"), { method: "POST", body: data });
     if (!res.ok) throw new Error(await safeError(res));
     showResult(await res.json());
   } catch (error) {
@@ -154,7 +159,7 @@ async function uploadText(event) {
   setBusy(submit, true, "Sharing");
 
   try {
-    const res = await fetch("/api/text", {
+    const res = await fetch(apiPath("/api/text"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -177,7 +182,7 @@ async function renderShare(id) {
   $("#shareView").hidden = false;
   $("#shareStatus").textContent = "Loading";
 
-  const res = await fetch(`/api/items/${id}`);
+  const res = await fetch(apiPath(`/api/items/${id}`));
   if (!res.ok) {
     $("#shareStatus").textContent = await safeError(res);
     return;
@@ -231,7 +236,7 @@ async function renderPreview(card, item) {
   `;
   card.append(preview);
 
-  const res = await fetch(`/api/items/${item.id}/preview`);
+  const res = await fetch(apiPath(`/api/items/${item.id}/preview`));
   if (!res.ok) {
     preview.querySelector(".preview-body").textContent = await safeError(res);
     return;
@@ -286,7 +291,9 @@ async function init() {
   $("#fileForm").addEventListener("submit", uploadFile);
   $("#textForm").addEventListener("submit", uploadText);
 
-  const match = location.pathname.match(/^\/s\/([A-Za-z0-9_-]+)$/);
+  const escapedBasePath = basePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const sharePattern = new RegExp(`^${escapedBasePath}/s/([A-Za-z0-9_-]+)$`);
+  const match = location.pathname.match(sharePattern);
   if (match) {
     await renderShare(match[1]);
   }

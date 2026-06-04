@@ -37,6 +37,7 @@ Every setting can be passed as a flag or environment variable.
 | `-preview-size` | `QFS_PREVIEW_SIZE` | `4MB` |
 | `-access-password` | `QFS_ACCESS_PASSWORD` | disabled |
 | `-public-base-url` | `QFS_PUBLIC_BASE_URL` | request host |
+| `-base-path` | `QFS_BASE_PATH` | disabled |
 
 Examples:
 
@@ -44,6 +45,7 @@ Examples:
 QFS_ACCESS_PASSWORD='change-me' ./bin/quick-file-share
 QFS_MAX_UPLOAD_SIZE=1GB QFS_DATA_DIR=/srv/quick-file-share ./bin/quick-file-share
 QFS_PUBLIC_BASE_URL=https://fileshare.intra ./bin/quick-file-share
+QFS_PUBLIC_BASE_URL=https://fileshare.intra QFS_BASE_PATH=/qfs ./bin/quick-file-share
 ```
 
 ## Behavior
@@ -59,6 +61,7 @@ QFS_PUBLIC_BASE_URL=https://fileshare.intra ./bin/quick-file-share
 - Keep runtime data and deployment scratch files outside git.
 - Use `QFS_ACCESS_PASSWORD` when the service is reachable beyond a trusted LAN.
 - Set `QFS_PUBLIC_BASE_URL` to the HTTPS URL exposed by the reverse proxy.
+- Set `QFS_BASE_PATH` when serving under a path prefix such as `/qfs`.
 - Run with TLS at the proxy when password protection is enabled.
 
 ## API

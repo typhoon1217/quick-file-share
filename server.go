@@ -36,6 +36,7 @@ type App struct {
 	authToken string
 	markdown  goldmark.Markdown
 	sanitizer *bluemonday.Policy
+	index     *template.Template
 	now       func() time.Time
 }
 
@@ -50,6 +51,10 @@ func NewApp(cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	index, err := template.ParseFS(embeddedWeb, "web/index.html")
+	if err != nil {
+		return nil, err
+	}
 
 	return &App{
 		cfg:       cfg,
@@ -60,6 +65,7 @@ func NewApp(cfg Config) (*App, error) {
 			goldmark.WithRendererOptions(html.WithUnsafe()),
 		),
 		sanitizer: bluemonday.UGCPolicy(),
+		index:     index,
 		now:       now,
 	}, nil
 }
@@ -87,7 +93,21 @@ func (a *App) Handler() http.Handler {
 	protected.HandleFunc("/api/items/", a.handleItems)
 	public.Handle("/", a.requireAuth(protected))
 
-	return a.logRequests(a.securityHeaders(public))
+	handler := http.Handler(public)
+	if a.cfg.BasePath != "" {
+		prefixed := http.NewServeMux()
+		prefixed.HandleFunc(a.cfg.BasePath, func(w http.ResponseWriter, r *http.Request) {
+			target := a.publicPath("/")
+			if r.URL.RawQuery != "" {
+				target += "?" + r.URL.RawQuery
+			}
+			http.Redirect(w, r, target, http.StatusMovedPermanently)
+		})
+		prefixed.Handle(a.cfg.BasePath+"/", http.StripPrefix(a.cfg.BasePath, handler))
+		handler = prefixed
+	}
+
+	return a.logRequests(a.securityHeaders(handler))
 }
 
 func (a *App) StartCleanup(ctx context.Context) {
@@ -118,37 +138,41 @@ func (a *App) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	http.ServeFileFS(w, r, embeddedWeb, "web/index.html")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = a.index.ExecuteTemplate(w, "index.html", map[string]string{"BasePath": a.cfg.BasePath})
 }
 
 func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if a.cfg.AccessPassword == "" {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		http.Redirect(w, r, a.publicPath("/"), http.StatusSeeOther)
 		return
 	}
 
 	switch r.Method {
 	case http.MethodGet:
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_ = loginTemplate.Execute(w, map[string]string{"Error": r.URL.Query().Get("error")})
+		_ = loginTemplate.Execute(w, map[string]string{
+			"BasePath": a.cfg.BasePath,
+			"Error":    r.URL.Query().Get("error"),
+		})
 	case http.MethodPost:
 		if err := r.ParseForm(); err != nil {
-			http.Redirect(w, r, "/login?error=bad-request", http.StatusSeeOther)
+			http.Redirect(w, r, a.publicPath("/login?error=bad-request"), http.StatusSeeOther)
 			return
 		}
 		if subtle.ConstantTimeCompare([]byte(r.Form.Get("password")), []byte(a.cfg.AccessPassword)) != 1 {
-			http.Redirect(w, r, "/login?error=invalid", http.StatusSeeOther)
+			http.Redirect(w, r, a.publicPath("/login?error=invalid"), http.StatusSeeOther)
 			return
 		}
 		http.SetCookie(w, &http.Cookie{
 			Name:     "qfs_session",
 			Value:    a.authToken,
-			Path:     "/",
+			Path:     a.cookiePath(),
 			HttpOnly: true,
 			Secure:   a.requestIsHTTPS(r),
 			SameSite: http.SameSiteLaxMode,
 		})
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		http.Redirect(w, r, a.publicPath("/"), http.StatusSeeOther)
 	default:
 		w.Header().Set("Allow", "GET, POST")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -159,12 +183,12 @@ func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     "qfs_session",
 		Value:    "",
-		Path:     "/",
+		Path:     a.cookiePath(),
 		MaxAge:   -1,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 	})
-	http.Redirect(w, r, "/login", http.StatusSeeOther)
+	http.Redirect(w, r, a.publicPath("/login"), http.StatusSeeOther)
 }
 
 func (a *App) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -174,6 +198,7 @@ func (a *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 		"defaultTTL":      formatDurationLabel(a.cfg.DefaultTTL),
 		"defaultTTLValue": durationFormValue(a.cfg.DefaultTTL),
 		"passwordEnabled": a.cfg.AccessPassword != "",
+		"basePath":        a.cfg.BasePath,
 	})
 }
 
@@ -305,7 +330,7 @@ func (a *App) handleItemMetadata(w http.ResponseWriter, r *http.Request, id stri
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, item.Public(a.now()))
+	writeJSON(w, http.StatusOK, item.Public(a.now(), a.cfg.BasePath))
 }
 
 func (a *App) handleItemContent(w http.ResponseWriter, r *http.Request, id string) {
@@ -408,7 +433,7 @@ func (a *App) handleItemDelete(w http.ResponseWriter, r *http.Request, id string
 }
 
 func (a *App) writeCreatedItem(w http.ResponseWriter, r *http.Request, item Item) {
-	public := item.Public(a.now())
+	public := item.Public(a.now(), a.cfg.BasePath)
 	sharePath := "/s/" + item.ID
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"item":        public,
@@ -447,14 +472,25 @@ func (a *App) ttlFromRequest(raw string) (time.Duration, error) {
 
 func (a *App) absoluteURL(r *http.Request, path string) string {
 	if a.cfg.PublicBaseURL != "" {
-		return a.cfg.PublicBaseURL + path
+		return a.cfg.PublicBaseURL + a.publicPath(path)
 	}
 	scheme := "http"
 	if a.requestIsHTTPS(r) {
 		scheme = "https"
 	}
 	host := r.Host
-	return scheme + "://" + host + path
+	return scheme + "://" + host + a.publicPath(path)
+}
+
+func (a *App) publicPath(path string) string {
+	return joinBasePath(a.cfg.BasePath, path)
+}
+
+func (a *App) cookiePath() string {
+	if a.cfg.BasePath == "" {
+		return "/"
+	}
+	return a.cfg.BasePath
 }
 
 func (a *App) requestIsHTTPS(r *http.Request) bool {
@@ -482,7 +518,7 @@ func (a *App) requireAuth(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "login required")
 			return
 		}
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		http.Redirect(w, r, a.publicPath("/login"), http.StatusSeeOther)
 	})
 }
 
@@ -550,12 +586,12 @@ var loginTemplate = template.Must(template.New("login").Parse(`<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Quick File Share</title>
-  <link rel="stylesheet" href="/assets/styles.css">
+  <link rel="stylesheet" href="{{.BasePath}}/assets/styles.css">
 </head>
 <body class="login-body">
   <main class="login-panel">
     <h1>Quick File Share</h1>
-    <form method="post" action="/login" class="login-form">
+    <form method="post" action="{{.BasePath}}/login" class="login-form">
       <label for="password">Access password</label>
       <input id="password" name="password" type="password" autofocus autocomplete="current-password">
       {{if .Error}}<p class="error-text">Invalid password</p>{{end}}

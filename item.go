@@ -39,7 +39,7 @@ type PublicItem struct {
 	QRURL            string    `json:"qrUrl"`
 }
 
-func (item Item) Public(now time.Time) PublicItem {
+func (item Item) Public(now time.Time, basePath string) PublicItem {
 	remaining := int64(time.Until(item.ExpiresAt).Seconds())
 	if !now.IsZero() {
 		remaining = int64(item.ExpiresAt.Sub(now).Seconds())
@@ -60,9 +60,9 @@ func (item Item) Public(now time.Time) PublicItem {
 		SecondsRemaining: remaining,
 		Previewable:      format != "",
 		PreviewFormat:    format,
-		DownloadURL:      "/api/items/" + item.ID + "/content?download=1",
-		ContentURL:       "/api/items/" + item.ID + "/content",
-		QRURL:            "/api/items/" + item.ID + "/qr.png",
+		DownloadURL:      joinBasePath(basePath, "/api/items/"+item.ID+"/content?download=1"),
+		ContentURL:       joinBasePath(basePath, "/api/items/"+item.ID+"/content"),
+		QRURL:            joinBasePath(basePath, "/api/items/"+item.ID+"/qr.png"),
 	}
 }
 

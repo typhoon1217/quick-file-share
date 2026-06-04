@@ -173,6 +173,56 @@ func TestAccessPasswordProtectsAPI(t *testing.T) {
 	}
 }
 
+func TestBasePathRoutesAndGeneratedURLs(t *testing.T) {
+	app := testApp(t)
+	app.cfg.BasePath = "/qfs"
+	app.cfg.PublicBaseURL = "https://mtsak.duckdns.org"
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	body := strings.NewReader(`{"name":"path.md","text":"# Path","ttl":"1h"}`)
+	res, err := http.Post(server.URL+"/qfs/api/text", "application/json", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create status %d", res.StatusCode)
+	}
+
+	var created struct {
+		Item      PublicItem `json:"item"`
+		ShareURL  string     `json:"shareUrl"`
+		DeleteURL string     `json:"deleteUrl"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(created.ShareURL, "https://mtsak.duckdns.org/qfs/s/") {
+		t.Fatalf("share url = %q", created.ShareURL)
+	}
+	if !strings.HasPrefix(created.DeleteURL, "https://mtsak.duckdns.org/qfs/api/items/") {
+		t.Fatalf("delete url = %q", created.DeleteURL)
+	}
+	if !strings.HasPrefix(created.Item.DownloadURL, "/qfs/api/items/") {
+		t.Fatalf("download url = %q", created.Item.DownloadURL)
+	}
+
+	page, err := http.Get(server.URL + "/qfs/s/" + created.Item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer page.Body.Close()
+	if page.StatusCode != http.StatusOK {
+		t.Fatalf("page status %d", page.StatusCode)
+	}
+	buf := new(bytes.Buffer)
+	_, _ = buf.ReadFrom(page.Body)
+	if !strings.Contains(buf.String(), `href="/qfs/assets/styles.css"`) {
+		t.Fatalf("page does not use prefixed assets: %s", buf.String())
+	}
+}
+
 func testApp(t *testing.T) *App {
 	t.Helper()
 	cfg := Config{

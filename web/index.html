@@ -4,11 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Quick File Share</title>
-  <link rel="stylesheet" href="/assets/styles.css">
+  <meta name="qfs-base-path" content="{{.BasePath}}">
+  <link rel="stylesheet" href="{{.BasePath}}/assets/styles.css">
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="/">Quick File Share</a>
+    <a class="brand" href="{{.BasePath}}/">Quick File Share</a>
     <div id="serverMeta" class="server-meta"></div>
   </header>
 
@@ -76,6 +77,6 @@
     </div>
   </template>
 
-  <script src="/assets/app.js" defer></script>
+  <script src="{{.BasePath}}/assets/app.js" defer></script>
 </body>
 </html>

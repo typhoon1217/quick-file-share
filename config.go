@@ -14,6 +14,7 @@ type Config struct {
 	Addr            string
 	DataDir         string
 	PublicBaseURL   string
+	BasePath        string
 	AccessPassword  string
 	MaxUploadBytes  int64
 	DefaultTTL      time.Duration
@@ -33,6 +34,7 @@ func LoadConfig(args []string) (Config, error) {
 	fs.StringVar(&cfg.Addr, "addr", getenv("QFS_ADDR", "0.0.0.0:8080"), "HTTP bind address")
 	fs.StringVar(&cfg.DataDir, "data-dir", getenv("QFS_DATA_DIR", "./data"), "directory for uploaded files and metadata")
 	fs.StringVar(&cfg.PublicBaseURL, "public-base-url", getenv("QFS_PUBLIC_BASE_URL", ""), "external base URL used for generated links and QR codes")
+	fs.StringVar(&cfg.BasePath, "base-path", getenv("QFS_BASE_PATH", ""), "optional URL path prefix, e.g. /qfs")
 	fs.StringVar(&cfg.AccessPassword, "access-password", getenv("QFS_ACCESS_PASSWORD", ""), "optional site-wide access password")
 	fs.StringVar(&maxUpload, "max-upload-size", getenv("QFS_MAX_UPLOAD_SIZE", "5GB"), "maximum upload size, e.g. 512MB, 5GB")
 	fs.StringVar(&defaultTTL, "default-ttl", getenv("QFS_DEFAULT_TTL", "24h"), "default expiry, e.g. 24h, 3d")
@@ -73,6 +75,10 @@ func LoadConfig(args []string) (Config, error) {
 		return Config{}, errors.New("preview size must be greater than zero")
 	}
 	cfg.PublicBaseURL = strings.TrimRight(cfg.PublicBaseURL, "/")
+	cfg.BasePath, err = normalizeBasePath(cfg.BasePath)
+	if err != nil {
+		return Config{}, err
+	}
 
 	return cfg, nil
 }
@@ -83,6 +89,31 @@ func getenv(key, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func normalizeBasePath(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" || value == "/" {
+		return "", nil
+	}
+	if !strings.HasPrefix(value, "/") {
+		value = "/" + value
+	}
+	value = strings.TrimRight(value, "/")
+	if strings.ContainsAny(value, "?#") || strings.Contains(value, "//") {
+		return "", fmt.Errorf("invalid base path %q", raw)
+	}
+	return value, nil
+}
+
+func joinBasePath(basePath, path string) string {
+	if path == "" {
+		path = "/"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return basePath + path
 }
 
 func parseDurationWithDays(raw string) (time.Duration, error) {

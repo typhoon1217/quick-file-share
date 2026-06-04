@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Quick File Share</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">Quick File Share</a>
+    <div id="serverMeta" class="server-meta"></div>
+  </header>
+
+  <main class="shell">
+    <section id="homeView" class="view">
+      <div class="tabs" role="tablist" aria-label="Upload type">
+        <button class="tab active" id="fileTab" type="button" role="tab" aria-selected="true">File</button>
+        <button class="tab" id="textTab" type="button" role="tab" aria-selected="false">Text</button>
+      </div>
+
+      <section id="filePanel" class="panel active" aria-labelledby="fileTab">
+        <form id="fileForm" class="upload-form">
+          <label id="dropZone" class="drop-zone" for="fileInput">
+            <input id="fileInput" name="file" type="file">
+            <span id="fileName">Select or drop a file</span>
+          </label>
+          <div class="form-row">
+            <label for="fileTTL">Expires</label>
+            <select id="fileTTL" name="ttl"></select>
+          </div>
+          <button id="fileSubmit" type="submit">Upload</button>
+        </form>
+      </section>
+
+      <section id="textPanel" class="panel" aria-labelledby="textTab" hidden>
+        <form id="textForm" class="upload-form">
+          <div class="form-row">
+            <label for="textName">Name</label>
+            <input id="textName" name="name" type="text" value="note.txt" autocomplete="off">
+          </div>
+          <textarea id="textInput" name="text" rows="14" spellcheck="false" placeholder="Paste text here"></textarea>
+          <div class="form-row">
+            <label for="textTTL">Expires</label>
+            <select id="textTTL" name="ttl"></select>
+          </div>
+          <button id="textSubmit" type="submit">Share Text</button>
+        </form>
+      </section>
+
+      <section id="result" class="result" hidden></section>
+    </section>
+
+    <section id="shareView" class="view share-view" hidden>
+      <div id="shareStatus" class="status-line"></div>
+      <div id="shareContent"></div>
+    </section>
+  </main>
+
+  <template id="resultTemplate">
+    <div class="result-grid">
+      <div>
+        <h2>Ready</h2>
+        <p class="muted result-name"></p>
+        <div class="copy-row">
+          <input class="share-url" readonly>
+          <button class="copy-link" type="button">Copy</button>
+        </div>
+        <div class="actions">
+          <a class="open-link button secondary">Open</a>
+          <a class="download-link button secondary">Download</a>
+          <button class="delete-button danger" type="button">Delete</button>
+        </div>
+      </div>
+      <img class="qr-img" alt="QR code">
+    </div>
+  </template>
+
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>

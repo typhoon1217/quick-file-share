@@ -136,6 +136,8 @@ async function uploadFile(event) {
   const data = new FormData();
   data.append("file", input.files[0]);
   data.append("ttl", $("#fileTTL").value);
+  const password = $("#filePassword").value.trim();
+  if (password) data.append("password", password);
 
   try {
     const res = await fetch(apiPath("/api/upload"), { method: "POST", body: data });
@@ -166,6 +168,7 @@ async function uploadText(event) {
         name: $("#textName").value,
         text,
         ttl: $("#textTTL").value,
+        password: $("#textPassword").value.trim(),
       }),
     });
     if (!res.ok) throw new Error(await safeError(res));
@@ -196,11 +199,7 @@ async function renderShare(id) {
     <div class="share-head">
       <div>
         <h1></h1>
-        <div class="share-meta">
-          <span class="pill"></span>
-          <span class="pill"></span>
-          <span class="pill"></span>
-        </div>
+        <div class="share-meta"></div>
         <div class="actions">
           <a class="button download-action">Download</a>
           <button class="secondary copy-action" type="button">Copy Link</button>
@@ -210,18 +209,73 @@ async function renderShare(id) {
     </div>
   `;
   card.querySelector("h1").textContent = item.filename;
-  const pills = card.querySelectorAll(".pill");
-  pills[0].textContent = item.sizeLabel;
-  pills[1].textContent = item.previewable ? item.previewFormat : "download";
-  pills[2].textContent = expiresLabel(item.secondsRemaining);
-  card.querySelector(".download-action").href = item.downloadUrl;
+  const meta = card.querySelector(".share-meta");
+  for (const label of [
+    item.sizeLabel,
+    item.previewable ? item.previewFormat : "download",
+    expiresLabel(item.secondsRemaining),
+    item.passwordProtected ? "locked" : "",
+  ]) {
+    if (!label) continue;
+    const pill = document.createElement("span");
+    pill.className = "pill";
+    pill.textContent = label;
+    meta.append(pill);
+  }
+
+  const locked = item.passwordProtected && !item.unlocked;
+  card.querySelector(".actions").hidden = locked;
+  if (!locked) {
+    card.querySelector(".download-action").href = item.downloadUrl;
+  }
   card.querySelector(".copy-action").addEventListener("click", () => copyText(location.href));
   card.querySelector(".qr-img").src = item.qrUrl;
 
   $("#shareContent").replaceChildren(card);
+  if (locked) {
+    renderUnlock(card, item);
+    return;
+  }
   if (item.previewable) {
     await renderPreview(card, item);
   }
+}
+
+function renderUnlock(card, item) {
+  const unlock = document.createElement("section");
+  unlock.className = "unlock-panel";
+  unlock.innerHTML = `
+    <form class="unlock-form">
+      <label for="itemPassword">Password</label>
+      <div class="copy-row">
+        <input id="itemPassword" class="unlock-password" type="password" autocomplete="current-password" autofocus>
+        <button class="unlock-button" type="submit">Unlock</button>
+      </div>
+      <p class="error-text unlock-error" hidden></p>
+    </form>
+  `;
+  unlock.querySelector(".unlock-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = unlock.querySelector(".unlock-button");
+    const error = unlock.querySelector(".unlock-error");
+    error.hidden = true;
+    setBusy(button, true, "Unlocking");
+    try {
+      const res = await fetch(apiPath(`/api/items/${item.id}/unlock`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: unlock.querySelector(".unlock-password").value }),
+      });
+      if (!res.ok) throw new Error(await safeError(res));
+      await renderShare(item.id);
+    } catch (err) {
+      error.textContent = err.message;
+      error.hidden = false;
+    } finally {
+      setBusy(button, false);
+    }
+  });
+  card.append(unlock);
 }
 
 async function renderPreview(card, item) {

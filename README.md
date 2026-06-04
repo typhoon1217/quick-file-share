@@ -1,6 +1,6 @@
 # quick-file-share
 
-Small intranet file/text share server with expiring links, browser upload UI, txt/md preview, copy buttons, QR codes, and optional access password.
+Small intranet file/text share server with expiring links, browser upload UI, txt/md preview, copy buttons, QR codes, and optional per-share passwords.
 
 ## Run
 
@@ -42,10 +42,10 @@ Every setting can be passed as a flag or environment variable.
 Examples:
 
 ```sh
-QFS_ACCESS_PASSWORD='change-me' ./bin/quick-file-share
 QFS_MAX_UPLOAD_SIZE=1GB QFS_DATA_DIR=/srv/quick-file-share ./bin/quick-file-share
 QFS_PUBLIC_BASE_URL=https://fileshare.intra ./bin/quick-file-share
 QFS_PUBLIC_BASE_URL=https://fileshare.intra QFS_BASE_PATH=/qfs ./bin/quick-file-share
+QFS_ACCESS_PASSWORD='change-me' ./bin/quick-file-share
 ```
 
 ## Behavior
@@ -54,29 +54,32 @@ QFS_PUBLIC_BASE_URL=https://fileshare.intra QFS_BASE_PATH=/qfs ./bin/quick-file-
 - The default expiry is 24 hours.
 - Expired items are deleted by a background cleanup loop and also lazily deleted when accessed.
 - Upload responses include a delete URL. Anyone with that delete token can delete the item before expiry.
-- When `QFS_ACCESS_PASSWORD` is set, the upload UI and share pages require the password.
+- Uploaders can set an optional password per file or text share. Protected content and previews require that password.
+- When `QFS_ACCESS_PASSWORD` is set, the whole site also requires a separate access password.
 
 ## Security checklist
 
 - Keep runtime data and deployment scratch files outside git.
-- Use `QFS_ACCESS_PASSWORD` when the service is reachable beyond a trusted LAN.
+- Restrict the reverse proxy to the trusted LAN when the service should not be public.
+- Use per-share passwords for individual protected transfers.
+- Use `QFS_ACCESS_PASSWORD` only when a site-wide gate is needed in addition to per-share passwords.
 - Set `QFS_PUBLIC_BASE_URL` to the HTTPS URL exposed by the reverse proxy.
 - Set `QFS_BASE_PATH` when serving under a path prefix such as `/qfs`.
-- Run with TLS at the proxy when password protection is enabled.
+- Run with TLS at the proxy when passwords are used.
 
 ## API
 
 Upload a file:
 
 ```sh
-curl -F file=@./example.txt -F ttl=24h http://localhost:8080/api/upload
+curl -F file=@./example.txt -F ttl=24h -F password=optional-secret http://localhost:8080/api/upload
 ```
 
 Share text:
 
 ```sh
 curl -H 'Content-Type: application/json' \
-  -d '{"name":"note.md","text":"# hello","ttl":"1h"}' \
+  -d '{"name":"note.md","text":"# hello","ttl":"1h","password":"optional-secret"}' \
   http://localhost:8080/api/text
 ```
 

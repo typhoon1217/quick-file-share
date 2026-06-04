@@ -101,7 +101,7 @@ func TestExpiredItemIsDeletedOnRead(t *testing.T) {
 	app.now = func() time.Time { return now }
 	app.store.now = app.now
 
-	item, err := app.store.Create(KindText, "old.txt", "text/plain; charset=utf-8", now.Add(time.Hour), strings.NewReader("old"))
+	item, err := app.store.Create(KindText, "old.txt", "text/plain; charset=utf-8", now.Add(time.Hour), "", strings.NewReader("old"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,6 +114,101 @@ func TestExpiredItemIsDeletedOnRead(t *testing.T) {
 	}
 	if _, statErr := os.Stat(app.store.ContentPath(item.ID)); !os.IsNotExist(statErr) {
 		t.Fatalf("expected deleted content, stat err = %v", statErr)
+	}
+}
+
+func TestItemPasswordProtectsPreviewAndContent(t *testing.T) {
+	app := testApp(t)
+	app.cfg.MaxUploadBytes = 1024
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	body := strings.NewReader(`{"name":"secret.txt","text":"copy me","ttl":"1h","password":"open sesame"}`)
+	res, err := http.Post(server.URL+"/api/text", "application/json", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create status %d", res.StatusCode)
+	}
+
+	var created struct {
+		Item PublicItem `json:"item"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if !created.Item.PasswordProtected {
+		t.Fatal("expected passwordProtected")
+	}
+	if !created.Item.Unlocked {
+		t.Fatal("creator response should be unlocked")
+	}
+	if len(res.Cookies()) == 0 {
+		t.Fatal("expected item unlock cookie")
+	}
+
+	metadata, err := http.Get(server.URL + "/api/items/" + created.Item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer metadata.Body.Close()
+	if metadata.StatusCode != http.StatusOK {
+		t.Fatalf("metadata status %d", metadata.StatusCode)
+	}
+	var public PublicItem
+	if err := json.NewDecoder(metadata.Body).Decode(&public); err != nil {
+		t.Fatal(err)
+	}
+	if !public.PasswordProtected || public.Unlocked {
+		t.Fatalf("metadata lock state = protected:%v unlocked:%v", public.PasswordProtected, public.Unlocked)
+	}
+
+	preview, err := http.Get(server.URL + "/api/items/" + created.Item.ID + "/preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer preview.Body.Close()
+	if preview.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("locked preview status %d", preview.StatusCode)
+	}
+
+	wrong, err := postJSON(server.URL+"/api/items/"+created.Item.ID+"/unlock", `{"password":"wrong"}`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrong.Body.Close()
+	if wrong.StatusCode != http.StatusForbidden {
+		t.Fatalf("wrong unlock status %d", wrong.StatusCode)
+	}
+
+	unlock, err := postJSON(server.URL+"/api/items/"+created.Item.ID+"/unlock", `{"password":"open sesame"}`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock.Body.Close()
+	if unlock.StatusCode != http.StatusOK {
+		t.Fatalf("unlock status %d", unlock.StatusCode)
+	}
+	if len(unlock.Cookies()) == 0 {
+		t.Fatal("expected unlock cookie")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, server.URL+"/api/items/"+created.Item.ID+"/preview", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cookie := range unlock.Cookies() {
+		req.AddCookie(cookie)
+	}
+	unlockedPreview, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlockedPreview.Body.Close()
+	if unlockedPreview.StatusCode != http.StatusOK {
+		t.Fatalf("unlocked preview status %d", unlockedPreview.StatusCode)
 	}
 }
 
@@ -221,6 +316,18 @@ func TestBasePathRoutesAndGeneratedURLs(t *testing.T) {
 	if !strings.Contains(buf.String(), `href="/qfs/assets/styles.css"`) {
 		t.Fatalf("page does not use prefixed assets: %s", buf.String())
 	}
+}
+
+func postJSON(url, body string, cookies []*http.Cookie) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	for _, cookie := range cookies {
+		req.AddCookie(cookie)
+	}
+	return http.DefaultClient.Do(req)
 }
 
 func testApp(t *testing.T) *App {

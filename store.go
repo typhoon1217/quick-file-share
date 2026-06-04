@@ -30,10 +30,14 @@ func NewStore(dataDir string, now func() time.Time) *Store {
 }
 
 func (s *Store) Init() error {
-	return os.MkdirAll(s.itemsDir(), 0o755)
+	if err := os.MkdirAll(s.itemsDir(), 0o700); err != nil {
+		return err
+	}
+	_ = os.Chmod(s.dataDir, 0o700)
+	return os.Chmod(s.itemsDir(), 0o700)
 }
 
-func (s *Store) Create(kind, filename, contentType string, expiresAt time.Time, src io.Reader) (Item, error) {
+func (s *Store) Create(kind, filename, contentType string, expiresAt time.Time, passwordHash string, src io.Reader) (Item, error) {
 	for attempts := 0; attempts < 5; attempts++ {
 		id, err := randomToken(12)
 		if err != nil {
@@ -45,7 +49,7 @@ func (s *Store) Create(kind, filename, contentType string, expiresAt time.Time, 
 		}
 
 		dir := s.itemDir(id)
-		if err := os.Mkdir(dir, 0o755); err != nil {
+		if err := os.Mkdir(dir, 0o700); err != nil {
 			if os.IsExist(err) {
 				continue
 			}
@@ -53,13 +57,14 @@ func (s *Store) Create(kind, filename, contentType string, expiresAt time.Time, 
 		}
 
 		item := Item{
-			ID:          id,
-			Kind:        kind,
-			Filename:    cleanFilename(filename),
-			ContentType: strings.TrimSpace(contentType),
-			CreatedAt:   s.now().UTC(),
-			ExpiresAt:   expiresAt.UTC(),
-			DeleteToken: deleteToken,
+			ID:           id,
+			Kind:         kind,
+			Filename:     cleanFilename(filename),
+			ContentType:  strings.TrimSpace(contentType),
+			CreatedAt:    s.now().UTC(),
+			ExpiresAt:    expiresAt.UTC(),
+			DeleteToken:  deleteToken,
+			PasswordHash: strings.TrimSpace(passwordHash),
 		}
 		if item.Filename == "" {
 			item.Filename = "download"
@@ -159,7 +164,7 @@ func (s *Store) saveMeta(item Item) error {
 	}
 	path := s.metaPath(item.ID)
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)
@@ -223,7 +228,7 @@ func cleanFilename(name string) string {
 
 func writeFileAtomic(path string, src io.Reader) (int64, error) {
 	tmp := path + ".tmp"
-	dst, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	dst, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return 0, err
 	}

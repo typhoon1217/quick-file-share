@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/subtle"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -238,7 +241,13 @@ func (a *App) handleUpload(w http.ResponseWriter, r *http.Request) {
 		contentType = mime.TypeByExtension(filepath.Ext(filename))
 	}
 
-	item, err := a.store.Create(KindFile, filename, contentType, a.now().Add(ttl), io.LimitReader(file, a.cfg.MaxUploadBytes+1))
+	passwordHash, err := hashItemPassword(r.Form.Get("password"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid password")
+		return
+	}
+
+	item, err := a.store.Create(KindFile, filename, contentType, a.now().Add(ttl), passwordHash, io.LimitReader(file, a.cfg.MaxUploadBytes+1))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not save upload")
 		return
@@ -255,9 +264,10 @@ func (a *App) handleUpload(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleText(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, a.cfg.MaxUploadBytes)
 	var req struct {
-		Text string `json:"text"`
-		Name string `json:"name"`
-		TTL  string `json:"ttl"`
+		Text     string `json:"text"`
+		Name     string `json:"name"`
+		TTL      string `json:"ttl"`
+		Password string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json body")
@@ -291,7 +301,13 @@ func (a *App) handleText(w http.ResponseWriter, r *http.Request) {
 		contentType = "text/markdown; charset=utf-8"
 	}
 
-	item, err := a.store.Create(KindText, filename, contentType, a.now().Add(ttl), strings.NewReader(req.Text))
+	passwordHash, err := hashItemPassword(req.Password)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid password")
+		return
+	}
+
+	item, err := a.store.Create(KindText, filename, contentType, a.now().Add(ttl), passwordHash, strings.NewReader(req.Text))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not save text")
 		return
@@ -318,6 +334,8 @@ func (a *App) handleItems(w http.ResponseWriter, r *http.Request) {
 		a.handleItemContent(w, r, id)
 	case len(parts) == 2 && parts[1] == "preview" && r.Method == http.MethodGet:
 		a.handleItemPreview(w, r, id)
+	case len(parts) == 2 && parts[1] == "unlock" && r.Method == http.MethodPost:
+		a.handleItemUnlock(w, r, id)
 	case len(parts) == 2 && parts[1] == "qr.png" && r.Method == http.MethodGet:
 		a.handleItemQR(w, r, id)
 	default:
@@ -330,12 +348,15 @@ func (a *App) handleItemMetadata(w http.ResponseWriter, r *http.Request, id stri
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, item.Public(a.now(), a.cfg.BasePath))
+	writeJSON(w, http.StatusOK, a.publicItem(r, item))
 }
 
 func (a *App) handleItemContent(w http.ResponseWriter, r *http.Request, id string) {
 	item, ok := a.loadItemForHTTP(w, id)
 	if !ok {
+		return
+	}
+	if !a.requireItemUnlock(w, r, item) {
 		return
 	}
 
@@ -365,6 +386,9 @@ func (a *App) handleItemPreview(w http.ResponseWriter, r *http.Request, id strin
 	if !ok {
 		return
 	}
+	if !a.requireItemUnlock(w, r, item) {
+		return
+	}
 	format := item.PreviewFormat()
 	if format == "" {
 		writeError(w, http.StatusUnsupportedMediaType, "preview is only available for txt and md files")
@@ -391,6 +415,26 @@ func (a *App) handleItemPreview(w http.ResponseWriter, r *http.Request, id strin
 		resp["html"] = string(a.sanitizer.SanitizeBytes(rendered.Bytes()))
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (a *App) handleItemUnlock(w http.ResponseWriter, r *http.Request, id string) {
+	item, ok := a.loadItemForHTTP(w, id)
+	if !ok {
+		return
+	}
+	var req struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	if !itemPasswordMatches(item.PasswordHash, req.Password) {
+		writeError(w, http.StatusForbidden, "invalid password")
+		return
+	}
+	a.setItemAccessCookie(w, r, item)
+	writeJSON(w, http.StatusOK, map[string]bool{"unlocked": true})
 }
 
 func (a *App) handleItemQR(w http.ResponseWriter, r *http.Request, id string) {
@@ -434,6 +478,10 @@ func (a *App) handleItemDelete(w http.ResponseWriter, r *http.Request, id string
 
 func (a *App) writeCreatedItem(w http.ResponseWriter, r *http.Request, item Item) {
 	public := item.Public(a.now(), a.cfg.BasePath)
+	if item.PasswordProtected() {
+		public.Unlocked = true
+		a.setItemAccessCookie(w, r, item)
+	}
 	sharePath := "/s/" + item.ID
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"item":        public,
@@ -457,6 +505,57 @@ func (a *App) loadItemForHTTP(w http.ResponseWriter, id string) (Item, bool) {
 		writeError(w, http.StatusInternalServerError, "could not load item")
 	}
 	return Item{}, false
+}
+
+func (a *App) publicItem(r *http.Request, item Item) PublicItem {
+	public := item.Public(a.now(), a.cfg.BasePath)
+	if item.PasswordProtected() {
+		public.Unlocked = a.itemUnlocked(r, item)
+	}
+	return public
+}
+
+func (a *App) requireItemUnlock(w http.ResponseWriter, r *http.Request, item Item) bool {
+	if a.itemUnlocked(r, item) {
+		return true
+	}
+	writeError(w, http.StatusUnauthorized, "item password required")
+	return false
+}
+
+func (a *App) itemUnlocked(r *http.Request, item Item) bool {
+	if !item.PasswordProtected() {
+		return true
+	}
+	cookie, err := r.Cookie(a.itemCookieName(item.ID))
+	if err != nil {
+		return false
+	}
+	expected := a.itemAccessToken(item)
+	return subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(expected)) == 1
+}
+
+func (a *App) setItemAccessCookie(w http.ResponseWriter, r *http.Request, item Item) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     a.itemCookieName(item.ID),
+		Value:    a.itemAccessToken(item),
+		Path:     a.cookiePath(),
+		HttpOnly: true,
+		Secure:   a.requestIsHTTPS(r),
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func (a *App) itemCookieName(id string) string {
+	return "qfs_item_" + id
+}
+
+func (a *App) itemAccessToken(item Item) string {
+	mac := hmac.New(sha256.New, []byte(a.authToken))
+	_, _ = mac.Write([]byte(item.ID))
+	_, _ = mac.Write([]byte{0})
+	_, _ = mac.Write([]byte(item.PasswordHash))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
 func (a *App) ttlFromRequest(raw string) (time.Duration, error) {
